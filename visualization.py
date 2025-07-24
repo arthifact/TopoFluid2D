@@ -1,5 +1,5 @@
 """
-visualization.py: Visualization utilities for TopoFluid2D
+visualization.py: Improved visualization utilities for TopoFluid2D
 """
 
 import numpy as np
@@ -10,10 +10,10 @@ import matplotlib.cm as cm
 from matplotlib.colors import Normalize
 
 
-def plot_voronoi_mesh(ax, cells, solid_segments, show_orphaned=True):
+def plot_voronoi_mesh(ax, cells, solid_segments, show_particles=True, show_cells=True):
     """
-    Plot the Voronoi mesh with solid boundaries
-
+    Plot the Voronoi mesh with solid boundaries - IMPROVED VERSION
+    
     Parameters:
     -----------
     ax : matplotlib axis
@@ -22,60 +22,63 @@ def plot_voronoi_mesh(ax, cells, solid_segments, show_orphaned=True):
         Voronoi cells
     solid_segments : list
         Solid boundary segments
-    show_orphaned : bool
-        Whether to highlight orphaned cells
+    show_particles : bool
+        Whether to show particle positions
+    show_cells : bool
+        Whether to show cell boundaries
     """
     # Clear axis
     ax.clear()
 
-    # Plot Voronoi cells
-    for idx, cell in cells.items():
-        if 'vertices' not in cell or not cell['vertices']:
-            continue
+    # Plot Voronoi cells if requested
+    if show_cells:
+        for idx, cell in cells.items():
+            if 'vertices' not in cell or not cell['vertices']:
+                continue
 
-        vertices = np.array(cell['vertices'])
+            vertices = np.array(cell['vertices'])
 
-        # Color based on cell type
-        if not cell.get('contains_source', True):
-            # Orphaned cell
-            color = 'lightcoral' if show_orphaned else 'lightblue'
-            alpha = 0.3
-        else:
-            # Valid cell
-            color = 'lightblue'
-            alpha = 0.2
+            # Color based on cell type
+            if not cell.get('contains_source', True):
+                # Orphaned cell
+                color = 'lightcoral'
+                alpha = 0.3
+            else:
+                # Valid cell
+                color = 'lightblue'
+                alpha = 0.1
 
-        # Create polygon
-        if len(vertices) > 2:
-            poly = Polygon(vertices, facecolor=color,
-                           edgecolor='black', alpha=alpha, linewidth=0.5)
-            ax.add_patch(poly)
+            # Create polygon
+            if len(vertices) > 2:
+                poly = Polygon(vertices, facecolor=color,
+                               edgecolor='gray', alpha=alpha, linewidth=0.3)
+                ax.add_patch(poly)
 
     # Plot source points
-    for idx, cell in cells.items():
-        if 'source_position' in cell:
-            pos = cell['source_position']
-            if cell.get('contains_source', True):
-                ax.plot(pos[0], pos[1], 'ko', markersize=3)
-            else:
-                ax.plot(pos[0], pos[1], 'ro', markersize=3)
+    if show_particles:
+        for idx, cell in cells.items():
+            if 'source_position' in cell:
+                pos = cell['source_position']
+                if cell.get('contains_source', True):
+                    ax.plot(pos[0], pos[1], 'ko', markersize=4, markerfacecolor='black')
+                else:
+                    ax.plot(pos[0], pos[1], 'ro', markersize=4, markerfacecolor='red')
 
-    # Plot solid boundaries
+    # Plot solid boundaries - HIGHLIGHTED
     for segment in solid_segments:
         start = segment['start']
         end = segment['end']
         ax.plot([start[0], end[0]], [start[1], end[1]],
-                'k-', linewidth=2)
+                'r-', linewidth=4, alpha=0.8, label='Solid Boundary')
 
     ax.set_aspect('equal')
     ax.grid(True, alpha=0.3)
 
 
-def plot_pressure_field(ax, positions, pressure, domain_bounds,
-                        n_grid=50, cmap='RdBu_r'):
+def plot_pressure_field_clean(ax, positions, pressure, domain_bounds, title="Pressure Field"):
     """
-    Plot pressure field using scattered data interpolation
-
+    Plot pressure field with clean visualization - NO BARS
+    
     Parameters:
     -----------
     ax : matplotlib axis
@@ -86,285 +89,210 @@ def plot_pressure_field(ax, positions, pressure, domain_bounds,
         Pressure values
     domain_bounds : tuple
         Domain boundaries
-    n_grid : int
-        Grid resolution for interpolation
-    cmap : str
-        Colormap name
+    title : str
+        Plot title
     """
-    from scipy.interpolate import griddata
-
-    # Create grid
-    x_min, x_max = domain_bounds[0]
-    y_min, y_max = domain_bounds[1]
-
-    xi = np.linspace(x_min, x_max, n_grid)
-    yi = np.linspace(y_min, y_max, n_grid)
-    xi, yi = np.meshgrid(xi, yi)
-
-    # Interpolate pressure
-    zi = griddata(positions, pressure, (xi, yi), method='linear')
-
-    # Plot
-    im = ax.contourf(xi, yi, zi, levels=20, cmap=cmap)
-
-    # Add colorbar
-    cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label('Pressure')
-
-    # Scatter plot of particles
+    # Clear axis
+    ax.clear()
+    
+    # Determine pressure range for consistent coloring
+    p_min, p_max = np.min(pressure), np.max(pressure)
+    
+    # Create scatter plot with clean appearance
     scatter = ax.scatter(positions[:, 0], positions[:, 1],
-                         c=pressure, s=20, cmap=cmap,
-                         edgecolors='black', linewidth=0.5)
-
+                        c=pressure, s=50, cmap='RdBu_r',
+                        vmin=p_min, vmax=p_max,
+                        edgecolors='black', linewidths=0.5,
+                        alpha=0.8)
+    
+    # Set domain bounds
+    ax.set_xlim(domain_bounds[0])
+    ax.set_ylim(domain_bounds[1])
     ax.set_aspect('equal')
-    ax.grid(True, alpha=0.3)
+    ax.set_title(title)
+    
+    # Add clean colorbar WITHOUT extra bars
+    cbar = plt.colorbar(scatter, ax=ax, shrink=0.8)
+    cbar.set_label('Pressure', rotation=270, labelpad=15)
+    
+    return scatter
 
 
-def plot_velocity_field(ax, positions, velocities, domain_bounds,
-                        scale=1.0, density=1):
+def plot_density_field_clean(ax, positions, density, domain_bounds, title="Density Field"):
+    """
+    Plot density field with clean visualization
+    """
+    # Clear axis
+    ax.clear()
+    
+    # Determine density range
+    rho_min, rho_max = np.min(density), np.max(density)
+    
+    # Create scatter plot
+    scatter = ax.scatter(positions[:, 0], positions[:, 1],
+                        c=density, s=50, cmap='viridis',
+                        vmin=rho_min, vmax=rho_max,
+                        edgecolors='black', linewidths=0.5,
+                        alpha=0.8)
+    
+    ax.set_xlim(domain_bounds[0])
+    ax.set_ylim(domain_bounds[1])
+    ax.set_aspect('equal')
+    ax.set_title(title)
+    
+    # Clean colorbar
+    cbar = plt.colorbar(scatter, ax=ax, shrink=0.8)
+    cbar.set_label('Density', rotation=270, labelpad=15)
+    
+    return scatter
+
+
+def plot_velocity_field(ax, positions, velocities, domain_bounds, title="Velocity Field", 
+                       scale=None, density=2):
     """
     Plot velocity field using arrows
-
-    Parameters:
-    -----------
-    ax : matplotlib axis
-        Axis to plot on
-    positions : array
-        Particle positions
-    velocities : array
-        Velocity vectors (u, v)
-    domain_bounds : tuple
-        Domain boundaries
-    scale : float
-        Arrow scale factor
-    density : int
-        Show every nth particle
     """
+    ax.clear()
+    
     # Subsample for clarity
     indices = np.arange(0, len(positions), density)
     pos_sub = positions[indices]
     vel_sub = velocities[indices]
-
+    
+    # Compute velocity magnitude for coloring
+    vel_mag = np.linalg.norm(vel_sub, axis=1)
+    
+    # Auto-scale if not provided
+    if scale is None:
+        max_vel = np.max(vel_mag) if len(vel_mag) > 0 else 1.0
+        scale = max_vel * 10  # Adjust scaling factor
+    
     # Plot arrows
-    ax.quiver(pos_sub[:, 0], pos_sub[:, 1],
-              vel_sub[:, 0], vel_sub[:, 1],
-              scale=scale, scale_units='xy', angles='xy',
-              color='black', alpha=0.6)
-
+    quiver = ax.quiver(pos_sub[:, 0], pos_sub[:, 1],
+                      vel_sub[:, 0], vel_sub[:, 1],
+                      vel_mag, scale=scale, scale_units='xy', 
+                      angles='xy', cmap='plasma',
+                      alpha=0.7)
+    
     ax.set_xlim(domain_bounds[0])
     ax.set_ylim(domain_bounds[1])
     ax.set_aspect('equal')
-    ax.grid(True, alpha=0.3)
+    ax.set_title(title)
+    
+    # Clean colorbar
+    cbar = plt.colorbar(quiver, ax=ax, shrink=0.8)
+    cbar.set_label('Velocity Magnitude', rotation=270, labelpad=15)
 
 
-def plot_density_field(ax, positions, density, domain_bounds,
-                       n_grid=50, cmap='viridis'):
+def create_physics_diagnostic_plot(state, t, step):
     """
-    Plot density field
+    Create diagnostic plots showing key physics quantities
+    Following the paper's approach for validation
     """
-    from scipy.interpolate import griddata
-
-    # Create grid
-    x_min, x_max = domain_bounds[0]
-    y_min, y_max = domain_bounds[1]
-
-    xi = np.linspace(x_min, x_max, n_grid)
-    yi = np.linspace(y_min, y_max, n_grid)
-    xi, yi = np.meshgrid(xi, yi)
-
-    # Interpolate density
-    zi = griddata(positions, density, (xi, yi), method='linear')
-
-    # Plot
-    im = ax.contourf(xi, yi, zi, levels=20, cmap=cmap)
-
-    # Add colorbar
-    cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label('Density')
-
-    ax.set_aspect('equal')
-    ax.grid(True, alpha=0.3)
-
-
-def create_animation(simulation_data, output_file='topofluid2d.mp4',
-                     fps=30, dpi=100):
-    """
-    Create animation from simulation data
-
-    Parameters:
-    -----------
-    simulation_data : list
-        List of dictionaries containing simulation state at each frame
-    output_file : str
-        Output filename
-    fps : int
-        Frames per second
-    dpi : int
-        Resolution
-    """
-    from matplotlib.animation import FuncAnimation, FFMpegWriter
-
-    # Setup figure
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    axes = axes.flatten()
-
-    def update_frame(frame_idx):
-        data = simulation_data[frame_idx]
-
-        # Clear all axes
-        for ax in axes:
-            ax.clear()
-
-        # Plot Voronoi mesh
-        plot_voronoi_mesh(axes[0], data['cells'], data['solid_segments'])
-        axes[0].set_title(f"Voronoi Mesh (t={data['time']:.3f})")
-
-        # Plot pressure
-        positions = data['positions']
-        pressure = data['pressure']
-        domain_bounds = data['domain_bounds']
-
-        plot_pressure_field(axes[1], positions, pressure, domain_bounds)
-        axes[1].set_title("Pressure Field")
-
-        # Plot density
-        plot_density_field(axes[2], positions, data['density'], domain_bounds)
-        axes[2].set_title("Density Field")
-
-        # Plot velocity
-        velocities = np.column_stack([data['velocity_u'], data['velocity_v']])
-        plot_velocity_field(axes[3], positions, velocities, domain_bounds)
-        axes[3].set_title("Velocity Field")
-
-        plt.tight_layout()
-
-    # Create animation
-    anim = FuncAnimation(fig, update_frame, frames=len(simulation_data),
-                         interval=1000 / fps, blit=False)
-
-    # Save animation
-    writer = FFMpegWriter(fps=fps, metadata=dict(artist='TopoFluid2D'),
-                          bitrate=1800)
-    anim.save(output_file, writer=writer, dpi=dpi)
-
-    print(f"Animation saved to {output_file}")
-
-
-def plot_simulation_diagnostics(time_history, dt_history, energy_history):
-    """
-    Plot simulation diagnostics
-
-    Parameters:
-    -----------
-    time_history : list
-        Time values
-    dt_history : list
-        Timestep values
-    energy_history : list
-        Total energy values
-    """
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8))
-
-    # Timestep history
-    ax1.plot(time_history[:-1], dt_history)
-    ax1.set_xlabel('Time')
-    ax1.set_ylabel('Timestep (dt)')
-    ax1.set_title('Timestep Evolution')
-    ax1.grid(True)
-    ax1.set_yscale('log')
-
-    # Energy conservation
-    ax2.plot(time_history, energy_history)
-    ax2.set_xlabel('Time')
-    ax2.set_ylabel('Total Energy')
-    ax2.set_title('Energy Conservation')
-    ax2.grid(True)
-
-    # Energy deviation
-    initial_energy = energy_history[0]
-    energy_deviation = [(e - initial_energy) / initial_energy * 100
-                        for e in energy_history]
-    ax3.plot(time_history, energy_deviation)
-    ax3.set_xlabel('Time')
-    ax3.set_ylabel('Energy Deviation (%)')
-    ax3.set_title('Relative Energy Error')
-    ax3.grid(True)
-
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 10))
+    
+    positions = state['positions']
+    rho = state['rho']
+    rho_u = state['rho_u']
+    rho_v = state['rho_v'] 
+    rho_e = state['rho_e']
+    gamma = state['gamma']
+    
+    # Compute derived quantities safely
+    u = np.where(rho > 1e-15, rho_u / rho, 0.0)
+    v = np.where(rho > 1e-15, rho_v / rho, 0.0)
+    e_kinetic = 0.5 * (u**2 + v**2)
+    e_internal = np.where(rho > 1e-15, rho_e / rho - e_kinetic, 1e-10)
+    pressure = np.maximum((gamma - 1) * rho * e_internal, 1e-10)
+    
+    # Sound speed
+    sound_speed = np.sqrt(gamma * pressure / rho)
+    
+    # Mach number
+    vel_magnitude = np.sqrt(u**2 + v**2)
+    mach_number = vel_magnitude / sound_speed
+    
+    domain_bounds = ((-1.0, 1.0), (-1.0, 1.0))
+    
+    # Plot 1: Density
+    plot_density_field_clean(ax1, positions, rho, domain_bounds, 
+                            f"Density (t={t:.4f})")
+    
+    # Plot 2: Pressure  
+    plot_pressure_field_clean(ax2, positions, pressure, domain_bounds,
+                             f"Pressure (t={t:.4f})")
+    
+    # Plot 3: Velocity vectors
+    velocities = np.column_stack([u, v])
+    plot_velocity_field(ax3, positions, velocities, domain_bounds,
+                       f"Velocity Field (t={t:.4f})")
+    
+    # Plot 4: Mach number
+    ax4.clear()
+    scatter = ax4.scatter(positions[:, 0], positions[:, 1],
+                         c=mach_number, s=50, cmap='jet',
+                         edgecolors='black', linewidths=0.5,
+                         alpha=0.8)
+    ax4.set_xlim(domain_bounds[0])
+    ax4.set_ylim(domain_bounds[1])
+    ax4.set_aspect('equal')
+    ax4.set_title(f"Mach Number (t={t:.4f})")
+    cbar = plt.colorbar(scatter, ax=ax4, shrink=0.8)
+    cbar.set_label('Mach Number', rotation=270, labelpad=15)
+    
     plt.tight_layout()
-    plt.show()
+    return fig
 
 
-def plot_shock_structure(positions, state, x_range, y_center, width=0.1):
+def plot_1d_slice(state, y_center=0.0, width=0.2):
     """
-    Plot 1D slice through shock structure
-
-    Parameters:
-    -----------
-    positions : array
-        Particle positions
-    state : dict
-        Fluid state
-    x_range : tuple
-        (x_min, x_max) for plot
-    y_center : float
-        y-coordinate for slice
-    width : float
-        Width of slice
+    Plot 1D slice through the domain for comparison with theory
+    This matches the paper's validation approach
     """
-    # Extract particles in slice
-    mask = np.abs(positions[:, 1] - y_center) < width / 2
+    positions = state['positions']
+    rho = state['rho']
+    rho_u = state['rho_u']
+    rho_e = state['rho_e']
+    gamma = state['gamma']
+    
+    # Find particles in the slice
+    mask = np.abs(positions[:, 1] - y_center) < width/2
+    if np.sum(mask) == 0:
+        print("No particles found in slice")
+        return
+        
     x_slice = positions[mask, 0]
-
-    # Sort by x-coordinate
+    rho_slice = rho[mask]
+    u_slice = np.where(rho_slice > 1e-15, rho_u[mask] / rho_slice, 0.0)
+    
+    # Compute pressure
+    e_kinetic = 0.5 * u_slice**2
+    e_internal = np.where(rho_slice > 1e-15, rho_e[mask] / rho_slice - e_kinetic, 1e-10)
+    p_slice = np.maximum((gamma - 1) * rho_slice * e_internal, 1e-10)
+    
+    # Sort by x coordinate
     sort_idx = np.argsort(x_slice)
     x_sorted = x_slice[sort_idx]
-
-    # Extract variables
-    rho = state['rho'][mask][sort_idx]
-    u = state['rho_u'][mask][sort_idx] / rho
-    p = compute_pressure_from_state(state, mask)[sort_idx]
-
-    # Plot
+    rho_sorted = rho_slice[sort_idx]
+    u_sorted = u_slice[sort_idx]
+    p_sorted = p_slice[sort_idx]
+    
+    # Create 1D plot
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
-
-    ax1.plot(x_sorted, rho, 'o-')
+    
+    ax1.plot(x_sorted, rho_sorted, 'o-', markersize=4)
     ax1.set_ylabel('Density')
-    ax1.grid(True)
-
-    ax2.plot(x_sorted, u, 'o-')
+    ax1.grid(True, alpha=0.3)
+    ax1.set_title('1D Slice Through Shock Tube')
+    
+    ax2.plot(x_sorted, u_sorted, 'o-', markersize=4, color='red')
     ax2.set_ylabel('Velocity')
-    ax2.grid(True)
-
-    ax3.plot(x_sorted, p, 'o-')
+    ax2.grid(True, alpha=0.3)
+    
+    ax3.plot(x_sorted, p_sorted, 'o-', markersize=4, color='green')
     ax3.set_ylabel('Pressure')
     ax3.set_xlabel('x')
-    ax3.grid(True)
-
-    ax1.set_title('Shock Structure')
-    ax1.set_xlim(x_range)
-
+    ax3.grid(True, alpha=0.3)
+    
     plt.tight_layout()
-    plt.show()
-
-
-def compute_pressure_from_state(state, mask=None):
-    """
-    Helper function to compute pressure from state
-    """
-    if mask is None:
-        mask = np.ones(len(state['rho']), dtype=bool)
-
-    rho = state['rho'][mask]
-    rho_u = state['rho_u'][mask]
-    rho_v = state['rho_v'][mask]
-    rho_e = state['rho_e'][mask]
-    gamma = state['gamma']
-
-    # Compute pressure
-    u = rho_u / rho
-    v = rho_v / rho
-    e_kinetic = 0.5 * (u ** 2 + v ** 2)
-    e_internal = rho_e / rho - e_kinetic
-    pressure = (gamma - 1) * rho * e_internal
-
-    return pressure
+    return fig
