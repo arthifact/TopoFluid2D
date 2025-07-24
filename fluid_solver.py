@@ -1,10 +1,11 @@
 """
-fluid_solver.py: Compressible Euler equations solver with Godunov-type schemes - FIXED VERSION
+fluid_solver.py: Enhanced Compressible Euler equations solver with paper-faithful improvements
 """
 
 import numpy as np
 import numba
 from numba import njit, prange
+from scipy.spatial.distance import cdist
 
 
 @njit
@@ -193,9 +194,69 @@ def apply_boundary_conditions(interfaces, solid_segments, state):
     return bc_interfaces
 
 
-def compute_timestep(state, interfaces, cfl=0.5):
+def compute_cell_volumes_enhanced(interfaces, positions):
     """
-    Compute stable timestep using CFL condition - SAFE VERSION
+    Enhanced cell volume computation based on particle distribution
+    Should eventually use actual Voronoi cell volumes
+    """
+    n_particles = len(positions)
+    
+    if n_particles == 0:
+        return np.array([])
+    
+    if n_particles == 1:
+        return np.array([1.0])  # Single particle gets unit volume
+    
+    # Method 1: Uniform volume distribution
+    domain_bounds = ((-1.2, 1.2), (-0.8, 0.8))  # From main script
+    domain_area = (domain_bounds[0][1] - domain_bounds[0][0]) * (domain_bounds[1][1] - domain_bounds[1][0])
+    uniform_volume = domain_area / n_particles
+    
+    # Method 2: Density-based volume (more sophisticated)
+    try:
+        distances = cdist(positions, positions)
+        np.fill_diagonal(distances, np.inf)
+        
+        # Volume inversely proportional to local density
+        min_distances = np.min(distances, axis=1)
+        local_volumes = np.pi * (min_distances / 2)**2  # Circular approximation
+        
+        # Normalize to preserve total volume
+        total_local = np.sum(local_volumes)
+        if total_local > 1e-10:
+            local_volumes *= domain_area / total_local
+        else:
+            local_volumes = np.full(n_particles, uniform_volume)
+    except:
+        local_volumes = np.full(n_particles, uniform_volume)
+    
+    # Use local volumes, but ensure minimum volume
+    min_volume = domain_area / (10 * n_particles)  # At least 1/10 of average
+    volumes = np.maximum(local_volumes, min_volume)
+    
+    return volumes
+
+
+def compute_timestep(state, interfaces, cfl=0.4):
+    """
+    Enhanced timestep computation following paper's CFL condition
+    
+    The paper uses: dt = CFL * min(A_ij / (|V_i| * a_ij))
+    where A_ij is interface area, V_i is cell volume, a_ij is signal velocity
+    
+    Parameters:
+    -----------
+    state : dict
+        Fluid state variables
+    interfaces : list
+        Interface information
+    cfl : float
+        CFL number (should be < 0.5 for stability)
+        
+    Returns:
+    --------
+    dt : float
+        Stable timestep
     """
     rho = state['rho']
     rho_u = state['rho_u']
@@ -203,51 +264,111 @@ def compute_timestep(state, interfaces, cfl=0.5):
     rho_e = state['rho_e']
     gamma = state['gamma']
     positions = state['positions']
-
-    dt_min = 1e-3  # Default safe timestep
-
+    
+    dt_min = 1e-2  # Default safe timestep
+    
+    if len(interfaces) == 0:
+        return dt_min
+    
     try:
-        # Estimate cell sizes and maximum velocities
-        for i in range(len(rho)):
-            if rho[i] <= 1e-15:
+        # Compute cell volumes using enhanced method
+        n_particles = len(rho)
+        if n_particles < 2:
+            return dt_min
+            
+        volumes = compute_cell_volumes_enhanced(interfaces, positions)
+        
+        # Process each interface for CFL constraint
+        for interface in interfaces:
+            i = interface['cell_i']
+            j = interface['cell_j']
+            area = interface.get('area', 0.01)
+            
+            # Skip invalid indices
+            if i < 0 or i >= n_particles:
                 continue
                 
-            # Get primitive variables with safety checks
-            u = rho_u[i] / rho[i]
-            v = rho_v[i] / rho[i]
-
-            # Limit velocities
-            u = np.clip(u, -100.0, 100.0)
-            v = np.clip(v, -100.0, 100.0)
-
-            # Compute pressure and sound speed
-            e_kinetic = 0.5 * (u ** 2 + v ** 2)
-            e_internal = max(rho_e[i] / rho[i] - e_kinetic, 1e-15)
-            p = max((gamma - 1) * rho[i] * e_internal, 1e-15)
-            c = np.sqrt(gamma * p / rho[i])
-
-            # Maximum signal speed
-            max_speed = np.sqrt(u ** 2 + v ** 2) + c
-            max_speed = max(max_speed, 1e-10)
-
-            # Estimate cell size (distance to nearest neighbor)
-            if len(positions) > 1:
-                distances = np.linalg.norm(positions - positions[i], axis=1)
-                distances[i] = np.inf  # Exclude self
-                min_dist = np.min(distances)
-                min_dist = max(min_dist, 1e-3)  # Minimum cell size
+            # Compute signal velocity at this interface
+            if j >= 0 and j < n_particles:
+                # Fluid-fluid interface
+                # Get primitive variables for both sides
+                rho_i = max(rho[i], 1e-15)
+                u_i = rho_u[i] / rho_i
+                v_i = rho_v[i] / rho_i
+                
+                rho_j = max(rho[j], 1e-15)
+                u_j = rho_u[j] / rho_j
+                v_j = rho_v[j] / rho_j
+                
+                # Compute pressures and sound speeds
+                e_kinetic_i = 0.5 * (u_i**2 + v_i**2)
+                e_internal_i = max(rho_e[i] / rho_i - e_kinetic_i, 1e-15)
+                p_i = max((gamma - 1) * rho_i * e_internal_i, 1e-15)
+                c_i = np.sqrt(gamma * p_i / rho_i)
+                
+                e_kinetic_j = 0.5 * (u_j**2 + v_j**2)
+                e_internal_j = max(rho_e[j] / rho_j - e_kinetic_j, 1e-15)
+                p_j = max((gamma - 1) * rho_j * e_internal_j, 1e-15)
+                c_j = np.sqrt(gamma * p_j / rho_j)
+                
+                # Normal velocities
+                normal = interface['normal']
+                un_i = u_i * normal[0] + v_i * normal[1]
+                un_j = u_j * normal[0] + v_j * normal[1]
+                
+                # Maximum signal velocity (from Kurganov-Tadmor)
+                signal_velocity = max(
+                    abs(un_i - c_i), abs(un_i), abs(un_i + c_i),
+                    abs(un_j - c_j), abs(un_j), abs(un_j + c_j)
+                )
+                
             else:
-                min_dist = 0.1
-
-            # Local timestep constraint
-            dt_local = cfl * min_dist / max_speed
-            dt_min = min(dt_min, dt_local)
-
+                # Solid interface - only consider fluid side
+                rho_i = max(rho[i], 1e-15)
+                u_i = rho_u[i] / rho_i
+                v_i = rho_v[i] / rho_i
+                
+                e_kinetic_i = 0.5 * (u_i**2 + v_i**2)
+                e_internal_i = max(rho_e[i] / rho_i - e_kinetic_i, 1e-15)
+                p_i = max((gamma - 1) * rho_i * e_internal_i, 1e-15)
+                c_i = np.sqrt(gamma * p_i / rho_i)
+                
+                # Include solid velocity if available
+                solid_vel = interface.get('solid_velocity', np.array([0.0, 0.0]))
+                normal = interface['normal']
+                
+                # Relative velocity
+                rel_u = u_i - solid_vel[0]
+                rel_v = v_i - solid_vel[1]
+                un_rel = rel_u * normal[0] + rel_v * normal[1]
+                
+                signal_velocity = max(abs(un_rel - c_i), abs(un_rel + c_i))
+            
+            # Ensure minimum signal velocity
+            signal_velocity = max(signal_velocity, 1e-8)
+            
+            # CFL constraint: dt < CFL * Volume / (Area * SignalVelocity)
+            # This ensures waves don't travel more than CFL fraction of cell size
+            volume_i = volumes[i] if i < len(volumes) else 0.01
+            dt_interface = cfl * volume_i / (area * signal_velocity)
+            
+            dt_min = min(dt_min, dt_interface)
+            
+            # Also check cell j for fluid-fluid interfaces
+            if j >= 0 and j < n_particles and j < len(volumes):
+                volume_j = volumes[j]
+                dt_interface_j = cfl * volume_j / (area * signal_velocity)
+                dt_min = min(dt_min, dt_interface_j)
+    
     except Exception as e:
-        print(f"Warning in timestep computation: {e}")
+        print(f"Warning in enhanced timestep computation: {e}")
         dt_min = 1e-4
-
-    return max(dt_min, 1e-6)  # Ensure minimum timestep
+    
+    # Apply reasonable bounds
+    dt_min = max(dt_min, 1e-6)  # Minimum timestep
+    dt_min = min(dt_min, 1e-2)  # Maximum timestep for stability
+    
+    return dt_min
 
 
 def update_fluid_state(state, fluxes, interfaces, dt):
@@ -268,9 +389,13 @@ def update_fluid_state(state, fluxes, interfaces, dt):
     if not fluxes:
         return new_state
 
-    # Compute cell volumes (simplified)
+    # Compute cell volumes using enhanced method
     n_particles = len(state['rho'])
-    volumes = np.ones(n_particles) * 0.01  # Simple uniform volume
+    volumes = compute_cell_volumes_enhanced(interfaces, state['positions'])
+    
+    # Ensure we have proper volumes
+    if len(volumes) != n_particles:
+        volumes = np.ones(n_particles) * 0.01  # Fallback
 
     # Initialize flux accumulator
     flux_sum = np.zeros((n_particles, 4))
@@ -320,12 +445,3 @@ def update_fluid_state(state, fluxes, interfaces, dt):
             new_state['rho_e'][i] = max(new_state['rho_e'][i], min_energy)
 
     return new_state
-
-
-def compute_cell_volumes(interfaces, n_particles):
-    """
-    Compute cell volumes - SIMPLIFIED VERSION
-    """
-    # Use uniform volumes for simplicity and stability
-    volumes = np.ones(n_particles) * 0.01
-    return volumes

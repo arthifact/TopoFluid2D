@@ -1,6 +1,6 @@
 """
-voronoi_utils.py: Topology-preserving Voronoi discretization utilities
-Implements the core algorithms from the paper for leakproof fluid-solid coupling
+voronoi_utils.py: FIXED - Enhanced topology-preserving Voronoi discretization utilities
+Fixed the critical issue with missing fluid-fluid interfaces
 """
 
 import numpy as np
@@ -13,16 +13,6 @@ from collections import defaultdict
 def compute_voronoi_diagram(positions):
     """
     Compute standard Voronoi diagram from fluid particle positions
-    
-    Parameters:
-    -----------
-    positions : array_like, shape (n, 2)
-        Positions of fluid particles
-        
-    Returns:
-    --------
-    vor : scipy.spatial.Voronoi
-        Voronoi diagram object
     """
     if len(positions) < 3:
         raise ValueError("Need at least 3 points for Voronoi diagram")
@@ -44,26 +34,11 @@ def compute_voronoi_diagram(positions):
         return vor
     except Exception as e:
         print(f"Voronoi computation failed: {e}")
-        # Fallback: create minimal diagram with just original points
         return Voronoi(positions)
 
 
 def point_in_polygon(point, vertices):
-    """
-    Ray casting algorithm to determine if point is inside polygon
-    
-    Parameters:
-    -----------
-    point : array_like, shape (2,)
-        Point to test
-    vertices : array_like, shape (n, 2)
-        Polygon vertices in order
-        
-    Returns:
-    --------
-    inside : bool
-        True if point is inside polygon
-    """
+    """Ray casting algorithm to determine if point is inside polygon"""
     x, y = point
     n = len(vertices)
     inside = False
@@ -83,65 +58,51 @@ def point_in_polygon(point, vertices):
     return inside
 
 
-def line_intersects_segment(line_start, line_end, seg_start, seg_end):
-    """
-    Check if line segment intersects another line segment
+def compute_adaptive_threshold(positions, solid_segments, base_threshold=0.15):
+    """Compute adaptive distance threshold based on local particle density"""
+    if len(positions) < 2:
+        return base_threshold
     
-    Returns:
-    --------
-    intersects : bool
-    intersection_point : array or None
-    """
-    def ccw(A, B, C):
-        return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
+    # Compute average nearest neighbor distance
+    distances = cdist(positions, positions)
+    np.fill_diagonal(distances, np.inf)
     
-    A, B = line_start, line_end
-    C, D = seg_start, seg_end
+    avg_nn_distance = np.mean(np.min(distances, axis=1))
     
-    if not (ccw(A, C, D) != ccw(B, C, D) and ccw(A, B, C) != ccw(A, B, D)):
-        return False, None
+    # FIXED: Better adaptive scaling
+    if len(solid_segments) > 100:
+        adaptive_factor = 1.8  # Reduced from 2.0
+    elif len(solid_segments) > 50:
+        adaptive_factor = 1.4  # Reduced from 1.5
+    else:
+        adaptive_factor = 1.0
     
-    # Compute intersection point
-    x1, y1 = A
-    x2, y2 = B
-    x3, y3 = C
-    x4, y4 = D
+    # Scale with average particle spacing but cap it
+    threshold = adaptive_factor * max(base_threshold, min(0.6 * avg_nn_distance, 0.3))
     
-    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
-    if abs(denom) < 1e-10:
-        return False, None
-    
-    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
-    
-    intersection = np.array([x1 + t * (x2 - x1), y1 + t * (y2 - y1)])
-    return True, intersection
+    return threshold
 
 
 def clip_voronoi_by_solids(vor, solid_segments):
-    """
-    Clip Voronoi cells by solid boundaries - BUNNY-OPTIMIZED version
-    
-    The key insight: with detailed boundaries (like 981 bunny segments), 
-    we need larger distance thresholds and better spatial reasoning.
-    
-    Parameters:
-    -----------
-    vor : scipy.spatial.Voronoi
-        Original Voronoi diagram
-    solid_segments : list
-        List of solid boundary segments
-        
-    Returns:
-    --------
-    cells : dict
-        Dictionary mapping particle index to clipped cell data
-    """
+    """FIXED - Enhanced clip Voronoi cells by solid boundaries"""
     cells = {}
-    n_particles = len(vor.points) - 8  # Subtract boundary points we added
+    n_particles = len(vor.points) - 8  # Subtract boundary points
     
-    print(f"Clipping {n_particles} particles against {len(solid_segments)} solid segments")
+    print(f"FIXED Enhanced clipping: {n_particles} particles against {len(solid_segments)} solid segments")
     
-    for i in range(n_particles):  # Only process original fluid particles
+    # Compute adaptive threshold
+    particle_positions = vor.points[:n_particles]
+    distance_threshold = compute_adaptive_threshold(particle_positions, solid_segments)
+    print(f"Using adaptive threshold: {distance_threshold:.4f}")
+    
+    # Pre-compute segment centers for faster spatial queries
+    segment_centers = []
+    for segment in solid_segments:
+        center = 0.5 * (segment['start'] + segment['end'])
+        segment_centers.append(center)
+    segment_centers = np.array(segment_centers) if segment_centers else np.empty((0, 2))
+    
+    for i in range(n_particles):
         if vor.point_region[i] < 0:
             continue
             
@@ -153,27 +114,28 @@ def clip_voronoi_by_solids(vor, solid_segments):
         if not region or -1 in region:
             continue
             
-        # Get original Voronoi cell vertices
         try:
             cell_vertices = [vor.vertices[j] for j in region]
             if len(cell_vertices) < 3:
                 continue
-                
             cell_vertices = np.array(cell_vertices)
         except:
             continue
         
-        # Find nearby solid segments - INCREASED THRESHOLD for bunny
+        # Find nearby solid segments
         particle_pos = vor.points[i]
         solid_faces = []
         
-        # Adaptive distance threshold based on number of segments
-        if len(solid_segments) > 100:  # Detailed boundary like bunny
-            distance_threshold = 0.25  # Larger threshold
+        # Quick spatial filtering
+        if len(segment_centers) > 0:
+            distances_to_centers = np.linalg.norm(segment_centers - particle_pos, axis=1)
+            nearby_indices = np.where(distances_to_centers < distance_threshold * 1.5)[0]  # Reduced multiplier
         else:
-            distance_threshold = 0.15  # Original threshold
+            nearby_indices = []
         
-        for segment in solid_segments:
+        # Check nearby segments
+        for idx in nearby_indices:
+            segment = solid_segments[idx]
             seg_start = segment['start']
             seg_end = segment['end']
             
@@ -187,13 +149,17 @@ def clip_voronoi_by_solids(vor, solid_segments):
                 closest_point = seg_start + t * seg_vec
                 distance = np.linalg.norm(particle_pos - closest_point)
                 
-                # If particle is close to this solid segment, add as solid face
                 if distance < distance_threshold:
                     solid_faces.append({
                         'start': seg_start,
                         'end': seg_end,
-                        'solid_ref': segment
+                        'solid_ref': segment,
+                        'distance': distance
                     })
+        
+        # Sort by distance
+        if solid_faces:
+            solid_faces.sort(key=lambda x: x['distance'])
         
         # Store cell data
         cells[i] = {
@@ -206,39 +172,25 @@ def clip_voronoi_by_solids(vor, solid_segments):
     # Debug output
     cells_with_solids = sum(1 for cell in cells.values() if len(cell.get('solid_faces', [])) > 0)
     total_solid_faces = sum(len(cell.get('solid_faces', [])) for cell in cells.values())
-    print(f"Result: {cells_with_solids} cells have solid faces ({total_solid_faces} total)")
+    avg_faces_per_cell = total_solid_faces / max(cells_with_solids, 1)
+    
+    print(f"FIXED Enhanced clipping result:")
+    print(f"  {cells_with_solids} cells have solid faces")
+    print(f"  Total solid faces: {total_solid_faces}")
+    print(f"  Average faces per boundary cell: {avg_faces_per_cell:.2f}")
     
     return cells
 
 
 def stitch_orphaned_cells(clipped_cells, positions):
-    """
-    Stitch orphaned cells back to valid cells - Algorithm 1 from Paper
-    
-    This is the core topology-preserving algorithm that ensures leakproofness
-    by reassigning orphaned cells to neighboring valid cells.
-    
-    Parameters:
-    -----------
-    clipped_cells : dict
-        Clipped Voronoi cells from previous step
-    positions : array_like
-        Fluid particle positions
-        
-    Returns:
-    --------
-    stitched_cells : dict
-        Final stitched cells preserving topology
-    """
+    """Stitch orphaned cells back to valid cells - Algorithm 1 from Paper"""
     stitched_cells = clipped_cells.copy()
     
-    # Find orphaned cells (cells that no longer contain their source point)
     orphaned_cells = []
     valid_cells = []
     
     for idx, cell in stitched_cells.items():
         if cell['contains_source']:
-            # Check if source point is actually inside the clipped cell
             source_pos = cell['source_position']
             vertices = cell['vertices']
             
@@ -255,7 +207,7 @@ def stitch_orphaned_cells(clipped_cells, positions):
         else:
             orphaned_cells.append(idx)
     
-    print(f"Found {len(orphaned_cells)} orphaned cells, {len(valid_cells)} valid cells")
+    print(f"Stitching: {len(orphaned_cells)} orphaned cells, {len(valid_cells)} valid cells")
     
     # Algorithm 1: Iteratively assign orphaned cells to valid neighbors
     max_iterations = 10
@@ -268,9 +220,6 @@ def stitch_orphaned_cells(clipped_cells, positions):
             if orphan_idx not in stitched_cells:
                 continue
                 
-            orphan_cell = stitched_cells[orphan_idx]
-            
-            # Find neighboring valid cells by checking distance
             best_neighbor = None
             largest_interface_area = 0
             
@@ -278,7 +227,6 @@ def stitch_orphaned_cells(clipped_cells, positions):
                 if valid_idx not in stitched_cells:
                     continue
                     
-                # Compute "interface area" as inverse distance (simplified)
                 dist = np.linalg.norm(positions[orphan_idx] - positions[valid_idx])
                 if dist > 0:
                     interface_area = 1.0 / dist
@@ -287,21 +235,12 @@ def stitch_orphaned_cells(clipped_cells, positions):
                         largest_interface_area = interface_area
                         best_neighbor = valid_idx
             
-            # Assign orphaned cell to best neighbor
             if best_neighbor is not None:
-                # Merge orphan cell into neighbor cell
-                neighbor_cell = stitched_cells[best_neighbor]
-                
-                # Combine vertices (simplified - just take neighbor's vertices)
-                # In full implementation, would do proper polygon union
-                
-                # Mark as assigned
                 newly_assigned.append(orphan_idx)
-                valid_cells.append(orphan_idx)  # Now it's valid
-                stitched_cells[orphan_idx]['contains_source'] = False  # But no source
+                valid_cells.append(orphan_idx)
+                stitched_cells[orphan_idx]['contains_source'] = False
                 stitched_cells[orphan_idx]['assigned_to'] = best_neighbor
         
-        # Remove assigned orphans from list
         for assigned_idx in newly_assigned:
             if assigned_idx in orphaned_cells:
                 orphaned_cells.remove(assigned_idx)
@@ -309,7 +248,7 @@ def stitch_orphaned_cells(clipped_cells, positions):
         iteration += 1
         
         if newly_assigned:
-            print(f"Iteration {iteration}: Assigned {len(newly_assigned)} orphaned cells")
+            print(f"Stitching iteration {iteration}: Assigned {len(newly_assigned)} orphaned cells")
     
     if orphaned_cells:
         print(f"Warning: {len(orphaned_cells)} cells remain orphaned after stitching")
@@ -319,20 +258,9 @@ def stitch_orphaned_cells(clipped_cells, positions):
 
 def compute_interface_geometry(cells):
     """
-    Compute geometric properties of interfaces between cells
+    FIXED - Enhanced compute geometric properties of interfaces
     
-    This creates the interface data needed for finite volume flux computation,
-    ensuring that solid boundaries are included as interfaces.
-    
-    Parameters:
-    -----------
-    cells : dict
-        Stitched Voronoi cells
-        
-    Returns:
-    --------
-    interfaces : list
-        List of interface dictionaries with geometric data
+    CRITICAL FIX: Ensures fluid-fluid interfaces are created properly
     """
     interfaces = []
     processed_pairs = set()
@@ -343,11 +271,29 @@ def compute_interface_geometry(cells):
         if 'source_position' in cell:
             positions[idx] = cell['source_position']
     
-    # Create fluid-fluid interfaces between neighboring particles
-    max_distance = 0.3  # Neighborhood threshold
+    if not positions:
+        print("WARNING: No positions found for interface computation!")
+        return interfaces
     
-    for i in positions.keys():
-        for j in positions.keys():
+    # FIXED: Better neighborhood computation
+    pos_array = np.array(list(positions.values()))
+    indices = list(positions.keys())
+    
+    if len(pos_array) > 1:
+        distances = cdist(pos_array, pos_array)
+        np.fill_diagonal(distances, np.inf)
+        avg_nn_distance = np.mean(np.min(distances, axis=1))
+        # FIXED: More generous fluid-fluid neighborhood
+        max_distance = min(0.5, 3.0 * avg_nn_distance)  # Increased multiplier
+    else:
+        max_distance = 0.4
+    
+    print(f"FIXED Enhanced interface computation using neighborhood distance: {max_distance:.4f}")
+    
+    # FIXED: Create fluid-fluid interfaces with better logic
+    fluid_interface_count = 0
+    for i_idx, i in enumerate(indices):
+        for j_idx, j in enumerate(indices):
             if i >= j:
                 continue
                 
@@ -367,8 +313,8 @@ def compute_interface_geometry(cells):
                 else:
                     normal = np.array([1.0, 0.0])
                 
-                # Interface area based on Voronoi edge length estimation
-                area = max(0.05, 0.3 * dist)
+                # Area computation based on distance
+                area = max(0.03, 0.4 * dist)  # More generous area
                 
                 interfaces.append({
                     'cell_i': i,
@@ -376,46 +322,77 @@ def compute_interface_geometry(cells):
                     'area': area,
                     'normal': normal,
                     'midpoint': midpoint,
-                    'is_solid': False
+                    'is_solid': False,
+                    'distance': dist
                 })
                 
                 processed_pairs.add((i, j))
+                fluid_interface_count += 1
     
-    # Add solid interfaces - KEY FOR LEAKPROOFNESS
+    # Add solid interfaces
+    solid_interface_count = 0
+    total_solid_area = 0.0
+    
     for i, cell in cells.items():
-        for solid_face in cell.get('solid_faces', []):
-            # Compute normal pointing into fluid (away from solid)
+        solid_faces = cell.get('solid_faces', [])
+        
+        for solid_face in solid_faces:
             edge = solid_face['end'] - solid_face['start']
-            if np.linalg.norm(edge) > 1e-10:
-                # Normal perpendicular to edge, pointing "inward"
-                normal = np.array([-edge[1], edge[0]])  # Rotate 90 degrees
+            edge_length = np.linalg.norm(edge)
+            
+            if edge_length > 1e-10:
+                # Compute area (simplified)
+                area = max(0.02, edge_length * 0.05)  # Simple area estimate
+                
+                # Normal perpendicular to edge
+                normal = np.array([-edge[1], edge[0]])
                 normal = normal / np.linalg.norm(normal)
                 
-                # Check orientation - normal should point toward fluid particle
+                # Ensure normal points toward fluid particle
                 edge_midpoint = 0.5 * (solid_face['start'] + solid_face['end'])
                 to_particle = positions[i] - edge_midpoint
                 if np.dot(normal, to_particle) < 0:
-                    normal = -normal  # Flip if pointing wrong way
+                    normal = -normal
                 
                 interfaces.append({
                     'cell_i': i,
                     'cell_j': -1,  # Solid boundary marker
-                    'area': np.linalg.norm(edge),
+                    'area': area,
                     'normal': normal,
                     'midpoint': edge_midpoint,
                     'is_solid': True,
                     'solid_velocity': solid_face['solid_ref'].get('velocity', np.array([0.0, 0.0]))
                 })
+                
+                solid_interface_count += 1
+                total_solid_area += area
     
-    print(f"Created {len(interfaces)} interfaces ({sum(1 for i in interfaces if i['is_solid'])} solid)")
+    # FIXED: Better debug output
+    avg_solid_area = total_solid_area / max(solid_interface_count, 1)
+    fluid_interfaces = [i for i in interfaces if not i['is_solid']]
+    avg_fluid_area = np.mean([i['area'] for i in fluid_interfaces]) if fluid_interfaces else 0
+    
+    print(f"FIXED Enhanced interfaces created: {len(interfaces)} total")
+    print(f"  Fluid interfaces: {len(fluid_interfaces)}, avg area: {avg_fluid_area:.4f}")
+    print(f"  Solid interfaces: {solid_interface_count}, avg area: {avg_solid_area:.4f}")
+    print(f"  Total solid area: {total_solid_area:.4f}")
+    
+    # CRITICAL CHECK
+    if len(fluid_interfaces) == 0:
+        print("⚠️  CRITICAL WARNING: No fluid-fluid interfaces created!")
+        print("   This will cause simulation failure - particles can't communicate")
+        print(f"   Particle positions range:")
+        if positions:
+            pos_array = np.array(list(positions.values()))
+            print(f"   X: [{np.min(pos_array[:, 0]):.3f}, {np.max(pos_array[:, 0]):.3f}]")
+            print(f"   Y: [{np.min(pos_array[:, 1]):.3f}, {np.max(pos_array[:, 1]):.3f}]")
+            print(f"   Avg distance: {avg_nn_distance:.3f}, Max allowed: {max_distance:.3f}")
     
     return interfaces
 
 
 def debug_plot_voronoi_clipping(vor, solid_segments, clipped_cells, filename=None):
-    """
-    Debug visualization of Voronoi clipping process
-    """
+    """Debug visualization of Voronoi clipping process"""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
     
     # Plot 1: Original Voronoi
@@ -434,14 +411,12 @@ def debug_plot_voronoi_clipping(vor, solid_segments, clipped_cells, filename=Non
         vertices = cell['vertices']
         if len(vertices) > 2:
             vertices = np.array(vertices)
-            # Close the polygon
             vertices_closed = np.vstack([vertices, vertices[0]])
             
             color = 'green' if cell['contains_source'] else 'red'
             ax2.plot(vertices_closed[:, 0], vertices_closed[:, 1], 
                     color=color, linewidth=2, alpha=0.7)
             
-            # Mark source point
             if 'source_position' in cell:
                 pos = cell['source_position']
                 ax2.plot(pos[0], pos[1], 'ko', markersize=4)
@@ -451,7 +426,7 @@ def debug_plot_voronoi_clipping(vor, solid_segments, clipped_cells, filename=Non
         start, end = segment['start'], segment['end']
         ax2.plot([start[0], end[0]], [start[1], end[1]], 'r-', linewidth=3, alpha=0.8)
     
-    ax2.set_title('Clipped Cells (Green=Valid, Red=Orphaned)')
+    ax2.set_title('FIXED Clipped Cells (Green=Valid, Red=Orphaned)')
     ax2.set_aspect('equal')
     
     plt.tight_layout()
