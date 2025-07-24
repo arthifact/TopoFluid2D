@@ -255,17 +255,91 @@ def initialize_solids(solid_type='thin_sheet'):
     return solid_segments
 
 
+def compute_interface_geometry(cells):
+    """
+    Compute geometric properties of interfaces between cells - IMPROVED VERSION
+    """
+    interfaces = []
+    processed_pairs = set()
+    
+    # Get positions for all cells
+    positions = {}
+    for idx, cell in cells.items():
+        if 'source_position' in cell:
+            positions[idx] = cell['source_position']
+    
+    # Create interfaces between neighboring particles
+    # For simplicity, use distance-based neighborhood
+    max_distance = 0.3  # Adjust based on particle spacing
+    
+    for i in positions.keys():
+        for j in positions.keys():
+            if i >= j:
+                continue
+                
+            if (i, j) in processed_pairs:
+                continue
+                
+            # Check if particles are neighbors (within max_distance)
+            dist = np.linalg.norm(positions[i] - positions[j])
+            if dist < max_distance:
+                # Compute interface properties
+                midpoint = 0.5 * (positions[i] + positions[j])
+                
+                # Normal vector points from i to j
+                direction = positions[j] - positions[i]
+                if np.linalg.norm(direction) > 1e-10:
+                    normal = direction / np.linalg.norm(direction)
+                else:
+                    normal = np.array([1.0, 0.0])
+                
+                # Interface area (length in 2D) - estimate based on distance
+                area = max(0.1, 0.5 * dist)  # Simple estimate
+                
+                interfaces.append({
+                    'cell_i': i,
+                    'cell_j': j,
+                    'area': area,
+                    'normal': normal,
+                    'midpoint': midpoint,
+                    'is_solid': False
+                })
+                
+                processed_pairs.add((i, j))
+    
+    # Add solid interfaces if any
+    for i, cell in cells.items():
+        for solid_face in cell.get('solid_faces', []):
+            # Compute normal pointing into fluid
+            edge = solid_face['end'] - solid_face['start']
+            if np.linalg.norm(edge) > 1e-10:
+                normal = np.array([-edge[1], edge[0]])  # Rotate 90 degrees
+                normal = normal / np.linalg.norm(normal)
+                
+                interfaces.append({
+                    'cell_i': i,
+                    'cell_j': -1,  # Solid boundary
+                    'area': np.linalg.norm(edge),
+                    'normal': normal,
+                    'midpoint': 0.5 * (solid_face['start'] + solid_face['end']),
+                    'is_solid': True,
+                    'solid_velocity': solid_face['solid_ref'].get('velocity', np.array([0.0, 0.0]))
+                })
+    
+    return interfaces
+
+
 def main():
     """
-    Main simulation loop
+    Main simulation loop - IMPROVED VERSION with better shock tube
     """
     # Simulation parameters
     domain_bounds = ((-1.0, 1.0), (-1.0, 1.0))
-    n_particles = 100  # Reduced for stability
-    t_final = 0.1  # Much shorter for testing
-    cfl = 0.3  # More conservative CFL
+    n_particles = 100
+    t_final = 0.2  # Longer simulation to see shock development
+    cfl = 0.3
 
-    # Milder initial conditions (less extreme Sod shock tube)
+    # More pronounced initial conditions for visible shock
     left_state = {
         'density': 1.0,
         'velocity_x': 0.0,
@@ -274,16 +348,16 @@ def main():
     }
 
     right_state = {
-        'density': 0.5,  # Less extreme density ratio
+        'density': 0.3,  # More pronounced density difference
         'velocity_x': 0.0,
         'velocity_y': 0.0,
-        'pressure': 0.5  # Less extreme pressure ratio
+        'pressure': 0.3  # More pronounced pressure difference
     }
 
     # Initialize particles
     positions, state = initialize_fluid_particles(domain_bounds, n_particles, left_state)
 
-    # Apply initial discontinuity (milder Sod shock tube)
+    # Apply initial discontinuity at x = 0
     mask = positions[:, 0] > 0.0
     state['rho'][mask] = right_state['density']
     state['rho_u'][mask] = right_state['density'] * right_state['velocity_x']
@@ -299,27 +373,20 @@ def main():
     solid_segments = initialize_solids('thin_sheet')
 
     # Visualization setup
-    plt.ion()  # Interactive mode
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    plt.ion()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
     # Time stepping
     t = 0.0
     step = 0
     dt_history = []
-    max_steps = 100  # Limit maximum steps
+    max_steps = 500
 
     print(f"Starting TopoFluid2D simulation...")
     print(f"Domain: {domain_bounds}")
     print(f"Particles: {n_particles}")
     print(f"CFL: {cfl}")
-
-    # Store initial state for visualization
-    cells = {}
-    for i in range(len(positions)):
-        cells[i] = {
-            'source_position': positions[i],
-            'contains_source': True
-        }
+    print(f"Initial shock: left (ρ={left_state['density']}, P={left_state['pressure']}) | right (ρ={right_state['density']}, P={right_state['pressure']})")
 
     while t < t_final and step < max_steps:
         # Check for NaN values before computation
@@ -338,10 +405,10 @@ def main():
             # 3. Stitch orphaned cells
             stitched_cells = stitch_orphaned_cells(clipped_cells, positions)
 
-            # 4. Compute interface geometry
+            # 4. Compute interface geometry (IMPROVED)
             interfaces = compute_interface_geometry(stitched_cells)
 
-            # 5. Apply boundary conditions (reflected particles)
+            # 5. Apply boundary conditions
             bc_interfaces = apply_boundary_conditions(interfaces, solid_segments, state)
 
             # 6. Compute numerical fluxes
@@ -349,7 +416,7 @@ def main():
 
             # 7. Compute timestep
             dt = compute_timestep(state, interfaces, cfl)
-            dt = min(dt, t_final - t, 1e-4)  # Limit maximum timestep
+            dt = min(dt, t_final - t, 5e-4)  # Slightly larger max timestep
             dt_history.append(dt)
 
             # 8. Update fluid state
@@ -360,7 +427,7 @@ def main():
             v = np.where(state['rho'] > 1e-15, state['rho_v'] / state['rho'], 0.0)
             
             # Limit maximum velocity to prevent runaway
-            max_vel = 10.0
+            max_vel = 5.0  # Reduced from 10.0
             u = np.clip(u, -max_vel, max_vel)
             v = np.clip(v, -max_vel, max_vel)
             
@@ -377,22 +444,27 @@ def main():
             print("Attempting to recover...")
             state = sanitize_state(state)
             positions = state['positions']
-            dt = 1e-5  # Very small timestep for recovery
+            dt = 1e-5
             t += dt
             step += 1
             continue
 
-        # Visualization every 10 steps
-        if step % 10 == 0:
+        # Visualization every 20 steps
+        if step % 20 == 0:
             try:
                 ax1.clear()
                 ax2.clear()
 
-                # Plot Voronoi mesh
+                # Plot Voronoi mesh with solid boundary
                 plot_voronoi_mesh(ax1, stitched_cells, solid_segments)
                 ax1.set_title(f'Voronoi Mesh (t={t:.4f})')
                 ax1.set_xlim(domain_bounds[0])
                 ax1.set_ylim(domain_bounds[1])
+                
+                # Add solid boundary visualization
+                for segment in solid_segments:
+                    start, end = segment['start'], segment['end']
+                    ax1.plot([start[0], end[0]], [start[1], end[1]], 'r-', linewidth=3, label='Solid')
 
                 # Plot pressure field
                 rho = state['rho']
@@ -407,17 +479,35 @@ def main():
                 e_internal = np.where(rho > 1e-15, rho_e / rho - e_kinetic, 1e-10)
                 pressure = np.maximum((gamma - 1) * rho * e_internal, 1e-10)
 
-                plot_pressure_field(ax2, positions, pressure, domain_bounds)
+                # Create pressure plot with better color range
+                scatter = ax2.scatter(positions[:, 0], positions[:, 1],
+                                     c=pressure, cmap='RdBu_r', s=60,
+                                     vmin=0.25, vmax=1.1)  # Fixed color range to see variation
+                ax2.set_xlim(domain_bounds[0])
+                ax2.set_ylim(domain_bounds[1])
+                ax2.set_aspect('equal')
                 ax2.set_title(f'Pressure Field (t={t:.4f})')
+                
+                # Add colorbar
+                cbar = plt.colorbar(scatter, ax=ax2)
+                cbar.set_label('Pressure')
+                
+                # Add interface visualization
+                if len(interfaces) > 0:
+                    print(f"Step {step}: {len(interfaces)} interfaces, {len(fluxes)} fluxes")
 
-                plt.pause(0.01)
+                plt.tight_layout()
+                plt.pause(0.05)
+                
             except Exception as e:
                 print(f"Visualization error: {e}")
 
         # Progress report
-        if step % 10 == 0:
-            avg_dt = np.mean(dt_history[-10:]) if len(dt_history) > 10 else np.mean(dt_history)
-            print(f"Step {step}: t={t:.5f}, dt={dt:.3e}, avg_dt={avg_dt:.3e}")
+        if step % 50 == 0:
+            avg_dt = np.mean(dt_history[-50:]) if len(dt_history) > 50 else np.mean(dt_history)
+            min_p, max_p = np.min(pressure), np.max(pressure)
+            min_rho, max_rho = np.min(rho), np.max(rho)
+            print(f"Step {step}: t={t:.5f}, dt={dt:.3e}, P=[{min_p:.3f},{max_p:.3f}], ρ=[{min_rho:.3f},{max_rho:.3f}]")
 
     print(f"\nSimulation complete!")
     print(f"Total steps: {step}")

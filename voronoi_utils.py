@@ -322,10 +322,77 @@ def update_fluid_state(state, fluxes, interfaces, dt):
     return new_state
 
 
-def compute_cell_volumes(interfaces, n_particles):
+# Add this function to replace the empty compute_interface_geometry in voronoi_utils.py
+
+def compute_interface_geometry(cells):
     """
-    Compute cell volumes - SIMPLIFIED VERSION
+    Compute geometric properties of interfaces between cells - IMPROVED VERSION
     """
-    # Use uniform volumes for simplicity and stability
-    volumes = np.ones(n_particles) * 0.01
-    return volumes
+    interfaces = []
+    processed_pairs = set()
+    
+    # Get positions for all cells
+    positions = {}
+    for idx, cell in cells.items():
+        if 'source_position' in cell:
+            positions[idx] = cell['source_position']
+    
+    # Create interfaces between neighboring particles
+    # For simplicity, use distance-based neighborhood
+    max_distance = 0.3  # Adjust based on particle spacing
+    
+    for i in positions.keys():
+        for j in positions.keys():
+            if i >= j:
+                continue
+                
+            if (i, j) in processed_pairs:
+                continue
+                
+            # Check if particles are neighbors (within max_distance)
+            dist = np.linalg.norm(positions[i] - positions[j])
+            if dist < max_distance:
+                # Compute interface properties
+                midpoint = 0.5 * (positions[i] + positions[j])
+                
+                # Normal vector points from i to j
+                direction = positions[j] - positions[i]
+                if np.linalg.norm(direction) > 1e-10:
+                    normal = direction / np.linalg.norm(direction)
+                else:
+                    normal = np.array([1.0, 0.0])
+                
+                # Interface area (length in 2D) - estimate based on distance
+                area = max(0.1, 0.5 * dist)  # Simple estimate
+                
+                interfaces.append({
+                    'cell_i': i,
+                    'cell_j': j,
+                    'area': area,
+                    'normal': normal,
+                    'midpoint': midpoint,
+                    'is_solid': False
+                })
+                
+                processed_pairs.add((i, j))
+    
+    # Add solid interfaces if any
+    for i, cell in cells.items():
+        for solid_face in cell.get('solid_faces', []):
+            # Compute normal pointing into fluid
+            edge = solid_face['end'] - solid_face['start']
+            if np.linalg.norm(edge) > 1e-10:
+                normal = np.array([-edge[1], edge[0]])  # Rotate 90 degrees
+                normal = normal / np.linalg.norm(normal)
+                
+                interfaces.append({
+                    'cell_i': i,
+                    'cell_j': -1,  # Solid boundary
+                    'area': np.linalg.norm(edge),
+                    'normal': normal,
+                    'midpoint': 0.5 * (solid_face['start'] + solid_face['end']),
+                    'is_solid': True,
+                    'solid_velocity': solid_face['solid_ref'].get('velocity', np.array([0.0, 0.0]))
+                })
+    
+    return interfaces
