@@ -3,7 +3,6 @@
 TopoFluid2D: Topology-Preserving Coupling of Compressible Fluids and Thin Deformables
 Main simulation script for 2D implementation
 """
-
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
@@ -14,119 +13,30 @@ import os
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Check if modules exist, if not, create placeholder functions
-try:
-    from voronoi_utils import (
-        compute_voronoi_diagram,
-        clip_voronoi_by_solids,
-        stitch_orphaned_cells,
-        compute_interface_geometry
-    )
-except ImportError:
-    print("Warning: voronoi_utils not found. Using placeholder functions.")
+# Check if modules exist
+from voronoi_utils import (
+    compute_voronoi_diagram,
+    clip_voronoi_by_solids,
+    stitch_orphaned_cells,
+    compute_interface_geometry
+)
+from fluid_solver import (
+    compute_numerical_flux,
+    update_fluid_state,
+    compute_timestep,
+    apply_boundary_conditions
+)
 
+from solid_handler import (
+    update_solid_positions,
+    compute_fluid_solid_coupling
+)
 
-    def compute_voronoi_diagram(positions):
-        from scipy.spatial import Voronoi
-        return Voronoi(positions)
-
-
-    def clip_voronoi_by_solids(vor, solid_segments):
-        # Placeholder - return unclipped cells
-        cells = {}
-        for i in range(len(vor.points)):
-            if vor.point_region[i] >= 0:
-                region = vor.regions[vor.point_region[i]]
-                if -1 not in region and len(region) > 0:
-                    cells[i] = {
-                        'vertices': [vor.vertices[j] for j in region],
-                        'solid_faces': [],
-                        'contains_source': True,
-                        'source_position': vor.points[i]
-                    }
-        return cells
-
-
-    def stitch_orphaned_cells(clipped_cells, positions):
-        return clipped_cells
-
-
-    def compute_interface_geometry(cells):
-        # Placeholder - return empty interfaces
-        return []
-
-try:
-    from fluid_solver import (
-        compute_numerical_flux,
-        update_fluid_state,
-        compute_timestep,
-        apply_boundary_conditions
-    )
-except ImportError:
-    print("Warning: fluid_solver not found. Using placeholder functions.")
-
-
-    def compute_numerical_flux(interfaces, state):
-        return []
-
-
-    def update_fluid_state(state, fluxes, interfaces, dt):
-        return state
-
-
-    def compute_timestep(state, interfaces, cfl):
-        return 0.001
-
-
-    def apply_boundary_conditions(interfaces, solid_segments, state):
-        return interfaces
-
-try:
-    from solid_handler import (
-        update_solid_positions,
-        compute_fluid_solid_coupling
-    )
-except ImportError:
-    print("Warning: solid_handler not found. Using placeholder functions.")
-
-
-    def update_solid_positions(solid_segments, dt):
-        return solid_segments
-
-
-    def compute_fluid_solid_coupling(interfaces, state, solid_segments):
-        return {}
-
-try:
-    from visualization import (
-        plot_voronoi_mesh,
-        plot_pressure_field,
-        create_animation
-    )
-except ImportError:
-    print("Warning: visualization not found. Using basic plotting.")
-
-
-    def plot_voronoi_mesh(ax, cells, solid_segments):
-        ax.clear()
-        # Basic scatter plot
-        for idx, cell in cells.items():
-            if 'source_position' in cell:
-                pos = cell['source_position']
-                ax.plot(pos[0], pos[1], 'ko', markersize=3)
-        ax.set_aspect('equal')
-        ax.grid(True)
-
-
-    def plot_pressure_field(ax, positions, pressure, domain_bounds):
-        ax.clear()
-        scatter = ax.scatter(positions[:, 0], positions[:, 1],
-                             c=pressure, cmap='RdBu_r', s=50)
-        ax.set_xlim(domain_bounds[0])
-        ax.set_ylim(domain_bounds[1])
-        ax.set_aspect('equal')
-        plt.colorbar(scatter, ax=ax)
-
+from visualization import (
+    plot_voronoi_mesh,
+    plot_pressure_field,
+    create_animation
+)
 
 def initialize_fluid_particles(domain_bounds, n_particles, initial_state):
     """
@@ -135,7 +45,7 @@ def initialize_fluid_particles(domain_bounds, n_particles, initial_state):
     Parameters:
     -----------
     domain_bounds : tuple
-        ((xmin, xmax), (ymin, ymax))
+        ((x_min, x_max), (y_min, y_max))
     n_particles : int
         Number of fluid particles
     initial_state : dict
@@ -148,15 +58,15 @@ def initialize_fluid_particles(domain_bounds, n_particles, initial_state):
     state : dict
         Fluid state variables (density, momentum, energy)
     """
-    xmin, xmax = domain_bounds[0]
-    ymin, ymax = domain_bounds[1]
+    x_min, x_max = domain_bounds[0]
+    y_min, y_max = domain_bounds[1]
 
     # Create regular grid of particles
-    nx = int(np.sqrt(n_particles * (xmax - xmin) / (ymax - ymin)))
+    nx = int(np.sqrt(n_particles * (x_max - x_min) / (y_max - y_min)))
     ny = int(n_particles / nx)
 
-    x = np.linspace(xmin + 0.05 * (xmax - xmin), xmax - 0.05 * (xmax - xmin), nx)
-    y = np.linspace(ymin + 0.05 * (ymax - ymin), ymax - 0.05 * (ymax - ymin), ny)
+    x = np.linspace(x_min + 0.05 * (x_max - x_min), x_max - 0.05 * (x_max - x_min), nx)
+    y = np.linspace(y_min + 0.05 * (y_max - y_min), y_max - 0.05 * (y_max - y_min), ny)
     xx, yy = np.meshgrid(x, y)
 
     positions = np.column_stack([xx.ravel(), yy.ravel()])
