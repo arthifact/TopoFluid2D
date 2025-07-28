@@ -1,0 +1,5 @@
+numpy
+pyvoro
+shapely
+matplotlib
+taichi
